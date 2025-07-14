@@ -1,0 +1,238 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Compressor and Cropper</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-2xl">
+        <h1 class="text-2xl font-bold mb-4 text-center">Image Compressor & Cropper</h1>
+        <input type="file" id="imageInput" accept="image/*" class="mb-4 w-full p-2 border rounded">
+        <div id="cropSection" class="hidden mb-4">
+            <h2 class="text-lg font-semibold mb-2">Crop Image</h2>
+            <div class="relative">
+                <canvas id="cropCanvas" class="border"></canvas>
+                <div id="cropOverlay" class="absolute border-2 border-dashed border-blue-500 pointer-events-none"></div>
+            </div>
+            <div class="flex justify-between mt-2">
+                <button id="cropButton" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Crop Image</button>
+                <button id="resetCropButton" class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">Reset Crop</button>
+            </div>
+        </div>
+        <div id="compressionSection" class="hidden mb-4">
+            <h2 class="text-lg font-semibold mb-2">Compress Image</h2>
+            <label for="targetSize" class="block mb-2">Target File Size (KB):</label>
+            <input type="number" id="targetSize" value="100" min="10" max="10000" class="w-full p-2 border rounded mb-2">
+            <button id="compressButton" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Compress Image</button>
+        </div>
+        <div id="previewSection" class="hidden">
+            <h2 class="text-lg font-semibold mb-2">Preview</h2>
+            <img id="previewImage" class="max-w-full h-auto border rounded mb-2">
+            <p id="fileSize" class="mb-2"></p>
+            <a id="downloadLink" href="#" download="compressed_image.jpg" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Download Image</a>
+        </div>
+    </div>
+    <script>
+        const imageInput = document.getElementById('imageInput');
+        const cropCanvas = document.getElementById('cropCanvas');
+        const cropOverlay = document.getElementById('cropOverlay');
+        const cropButton = document.getElementById('cropButton');
+        const resetCropButton = document.getElementById('resetCropButton');
+        const compressButton = document.getElementById('compressButton');
+        const targetSizeInput = document.getElementById('targetSize');
+        const previewImage = document.getElementById('previewImage');
+        const fileSizeDisplay = document.getElementById('fileSize');
+        const downloadLink = document.getElementById('downloadLink');
+        const cropSection = document.getElementById('cropSection');
+        const compressionSection = document.getElementById('compressionSection');
+        const previewSection = document.getElementById('previewSection');
+        let originalImage = new Image();
+        let cropArea = { x: 0, y: 0, width: 0, height: 0 };
+        let isDragging = false;
+        let startX, startY;
+        let croppedImageData = null;
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    originalImage.src = event.target.result;
+                    originalImage.onload = () => {
+                        const ctx = cropCanvas.getContext('2d');
+                        cropCanvas.width = originalImage.width;
+                        cropCanvas.height = originalImage.height;
+                        ctx.drawImage(originalImage, 0, 0);
+                        cropArea = {
+                            x: originalImage.width * 0.25,
+                            y: originalImage.height * 0.25,
+                            width: originalImage.width * 0.5,
+                            height: originalImage.height * 0.5
+                        };
+                        cropOverlay.style.left = `${cropArea.x}px`;
+                        cropOverlay.style.top = `${cropArea.y}px`;
+                        cropOverlay.style.width = `${cropArea.width}px`;
+                        cropOverlay.style.height = `${cropArea.height}px`;
+                        cropCanvas.addEventListener('mousedown', (e) => {
+                            const rect = cropCanvas.getBoundingClientRect();
+                            const x = e.clientX - rect.left;
+                            const y = e.clientY - rect.top;
+                            if (x >= cropArea.x && x <= cropArea.x + cropArea.width &&
+                                y >= cropArea.y && y <= cropArea.y + cropArea.height) {
+                                isDragging = true;
+                                startX = x - cropArea.x;
+                                startY = y - cropArea.y;
+                            }
+                        });
+                        cropCanvas.addEventListener('mousemove', (e) => {
+                            if (isDragging) {
+                                const rect = cropCanvas.getBoundingClientRect();
+                                const x = e.clientX - rect.left;
+                                const y = e.clientY - rect.top;
+                                cropArea.x = Math.max(0, Math.min(x - startX, cropCanvas.width - cropArea.width));
+                                cropArea.y = Math.max(0, Math.min(y - startY, cropCanvas.height - cropArea.height));
+                                cropOverlay.style.left = `${cropArea.x}px`;
+                                cropOverlay.style.top = `${cropArea.y}px`;
+                                cropOverlay.style.width = `${cropArea.width}px`;
+                                cropOverlay.style.height = `${cropArea.height}px`;
+                            }
+                        });
+                        cropCanvas.addEventListener('mouseup', () => {
+                            isDragging = false;
+                        });
+                        cropSection.classList.remove('hidden');
+                        compressionSection.classList.remove('hidden');
+                    };
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+        cropButton.addEventListener('click', () => {
+            const ctx = cropCanvas.getContext('2d');
+            const croppedCanvas = document.createElement('canvas');
+            croppedCanvas.width = cropArea.width;
+            croppedCanvas.height = cropArea.height;
+            const croppedCtx = croppedCanvas.getContext('2d');
+            croppedCtx.drawImage(
+                originalImage,
+                cropArea.x, cropArea.y, cropArea.width, cropArea.height,
+                0, 0, cropArea.width, cropArea.height
+            );
+            croppedImageData = croppedCanvas.toDataURL('image/jpeg', 0.9);
+            previewImage.src = croppedImageData;
+            previewSection.classList.remove('hidden');
+            const base64String = croppedImageData.split(',')[1];
+            const byteString = atob(base64String);
+            fileSizeDisplay.textContent = `File Size: ${(byteString.length / 1024).toFixed(2)} KB`;
+        });
+        resetCropButton.addEventListener('click', () => {
+            const ctx = cropCanvas.getContext('2d');
+            cropCanvas.width = originalImage.width;
+            cropCanvas.height = originalImage.height;
+            ctx.drawImage(originalImage, 0, 0);
+            cropArea = {
+                x: originalImage.width * 0.25,
+                y: originalImage.height * 0.25,
+                width: originalImage.width * 0.5,
+                height: originalImage.height * 0.5
+            };
+            cropOverlay.style.left = `${cropArea.x}px`;
+            cropOverlay.style.top = `${cropArea.y}px`;
+            cropOverlay.style.width = `${cropArea.width}px`;
+            cropOverlay.style.height = `${cropArea.height}px`;
+            croppedImageData = null;
+            previewSection.classList.add('hidden');
+        });
+        compressButton.addEventListener('click', async () => {
+            const targetSizeKB = parseInt(targetSizeInput.value);
+            if (!croppedImageData && !originalImage.src) return;
+            const sourceImage = croppedImageData || originalImage.src;
+            let quality = 0.9;
+            let compressedData;
+            let minQuality = 0.1;
+            let maxQuality = 0.9;
+            while (maxQuality - minQuality > 0.01) {
+                quality = (minQuality + maxQuality) / 2;
+                compressedData = await new Promise((resolve) => {
+                    const img = new Image();
+                    img.src = sourceImage;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        resolve(canvas.toDataURL('image/jpeg', quality));
+                    };
+                });
+                const base64String = compressedData.split(',')[1];
+                const byteString = atob(base64String);
+                const sizeKB = byteString.length / 1024;
+                if (sizeKB > targetSizeKB) {
+                    maxQuality = quality;
+                } else {
+                    minQuality = quality;
+                }
+            }
+            compressedData = await new Promise((resolve) => {
+                const img = new Image();
+                img.src = sourceImage;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    resolve(canvas.toDataURL('image/jpeg', minQuality));
+                };
+            });
+            previewImage.src = compressedData;
+            const base64String = compressedData.split(',')[1];
+            const byteString = atob(base64String);
+            fileSizeDisplay.textContent = `File Size: ${(byteString.length / 1024).toFixed(2)} KB`;
+            downloadLink.href = compressedData;
+            previewSection.classList.remove('hidden');
+        });
+    </script>
+</body>
+</html>
